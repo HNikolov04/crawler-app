@@ -2,7 +2,6 @@
 using Crawler.Domain.Entities;
 using System;
 using System.Threading;
-using System.Threading.Tasks;
 
 namespace Crawler.Application.Services.TreeServices;
 
@@ -34,132 +33,78 @@ public class TreeSearchingParallelService
         {
             finalResults.Add(node);
         }
-        else if (currentTag == "//")
+        else if (currentTag == "//" || currentTag == "html")
         {
             foreach (var result in ParallelFindNodes(node, treePathNodes, index + 1))
             {
-                finalResults.Add(result); 
-            }
-        }
-        else if (currentTag == "html")
-        {
-            foreach (var result in ParallelFindNodes(node, treePathNodes, index + 1))
-            {
-                finalResults.Add(result); 
+                finalResults.Add(result);
             }
         }
         else if (currentTag == "*")
         {
             if (node.Children.Count >= 4)
             {
-                var tasks = new CustomList<Task<CustomList<HtmlNode>>>();
+                var threads = new CustomList<Thread>();
+                var childResults = new CustomList<CustomList<HtmlNode>>();
 
-                if (node.Children.Count > _processorCount * 4)
+                int numberOfThreads = Math.Min(_processorCount, node.Children.Count);
+                int childrenPerThread = node.Children.Count / numberOfThreads;
+                int remainingChildren = node.Children.Count % numberOfThreads;
+
+                int childIndex = 0;
+
+                for (int i = 0; i < numberOfThreads; i++)
                 {
-                    int numberOfThreads = Math.Min(_processorCount, node.Children.Count);
+                    var childSubset = new CustomList<HtmlNode>();
+                    int end = childIndex + childrenPerThread + (i < remainingChildren ? 1 : 0);
 
-                    int childrenPerThread = node.Children.Count / numberOfThreads;
-                    int remainingChildren = node.Children.Count % numberOfThreads;
-
-                    int childIndex = 0;
-
-                    for (int i = 0; i < numberOfThreads; i++)
+                    for (int j = childIndex; j < end; j++)
                     {
-                        var childSubset = new CustomList<HtmlNode>();
-                        int end = childIndex + childrenPerThread + (i < remainingChildren ? 1 : 0);
+                        childSubset.Add(node.Children[j]);
+                    }
 
-                        for (int j = childIndex; j < end; j++)
+                    childIndex = end;
+
+                    _semaphore.WaitOne();
+
+                    var thread = new Thread(() =>
+                    {
+                        var localResults = new CustomList<HtmlNode>();
+                        try
                         {
-                            childSubset.Add(node.Children[j]);
-                        }
-
-                        childIndex = end;
-
-                        _semaphore.WaitOne();
-
-                        var task = Task.Run(() =>
-                        {
-                            var localResults = new CustomList<HtmlNode>();
-
-                            try
+                            foreach (var child in childSubset)
                             {
-                                foreach (var child in childSubset)
+                                foreach (var result in ParallelFindNodes(child, treePathNodes, index + 1))
                                 {
-                                    foreach (var result in ParallelFindNodes(child, treePathNodes, index + 1))
-                                    {
-                                        localResults.Add(result);
-                                    }
+                                    localResults.Add(result);
                                 }
                             }
-                            finally
-                            {
-                                _semaphore.Release();
-                            }
+                        }
+                        finally
+                        {
+                            _semaphore.Release();
+                        }
 
-                            return localResults;
-                        });
+                        lock (childResults)
+                        {
+                            childResults.Add(localResults);
+                        }
+                    });
 
-                        tasks.Add(task);
-                    }
-
-                    Task.WhenAll(tasks).Wait();
-                    foreach (var task in tasks)
-                    {
-                        finalResults.AddRange(task.Result);
-                    }
+                    threads.Add(thread);
+                    thread.Start();
                 }
-                else
+
+                foreach (var thread in threads)
                 {
-                    int numberOfThreads = Math.Min(_processorCount, node.Children.Count);
+                    thread.Join();
+                }
 
-                    int childrenPerThread = Math.Max(4, node.Children.Count / numberOfThreads);
-                    int remainingChildren = node.Children.Count % numberOfThreads;
-
-                    int childIndex = 0;
-
-                    for (int i = 0; i < numberOfThreads; i++)
+                foreach (var resultList in childResults)
+                {
+                    foreach (var result in resultList)
                     {
-                        var childSubset = new CustomList<HtmlNode>();
-                        int end = childIndex + childrenPerThread + (i < remainingChildren ? 1 : 0);
-
-                        for (int j = childIndex; j < end; j++)
-                        {
-                            childSubset.Add(node.Children[j]);
-                        }
-
-                        childIndex = end;
-
-                        _semaphore.WaitOne();
-
-                        var task = Task.Run(() =>
-                        {
-                            var localResults = new CustomList<HtmlNode>();
-
-                            try
-                            {
-                                foreach (var child in childSubset)
-                                {
-                                    foreach (var result in ParallelFindNodes(child, treePathNodes, index + 1))
-                                    {
-                                        localResults.Add(result); 
-                                    }
-                                }
-                            }
-                            finally
-                            {
-                                _semaphore.Release();
-                            }
-
-                            return localResults;
-                        });
-
-                        tasks.Add(task);
-                    }
-
-                    Task.WhenAll(tasks).Wait();
-                    foreach (var task in tasks)
-                    {
-                        finalResults.AddRange(task.Result);
+                        finalResults.Add(result);
                     }
                 }
             }
@@ -177,86 +122,54 @@ public class TreeSearchingParallelService
         else if (currentTag.Contains("[@"))
         {
             var attributeResults = HandleAttributeQuery(node, currentTag, treePathNodes, index);
-            finalResults.AddRange(attributeResults);
+            foreach (var result in attributeResults)
+            {
+                finalResults.Add(result);
+            }
         }
         else if (currentTag.Contains("["))
         {
             var indexedResults = HandleIndexedTagQuery(node, currentTag, treePathNodes, index);
-            finalResults.AddRange(indexedResults); 
+            foreach (var result in indexedResults)
+            {
+                finalResults.Add(result);
+            }
         }
         else
         {
             if (node.Children.Count >= 4)
             {
-                var tasks = new CustomList<Task<CustomList<HtmlNode>>>();
+                var threads = new CustomList<Thread>();
+                var childResults = new CustomList<CustomList<HtmlNode>>();
 
-                if (node.Children.Count > _processorCount * 4)
+                foreach (var child in node.Children)
                 {
-                    int numberOfThreads = Math.Min(_processorCount, node.Children.Count);
-                    int childrenPerThread = node.Children.Count / numberOfThreads;
-                    int remainingChildren = node.Children.Count % numberOfThreads;
-
-                    int childIndex = 0;
-
-                    for (int i = 0; i < numberOfThreads; i++)
-                    {
-                        var childSubset = new CustomList<HtmlNode>();
-                        int end = childIndex + childrenPerThread + (i < remainingChildren ? 1 : 0);
-
-                        for (int j = childIndex; j < end; j++)
-                        {
-                            childSubset.Add(node.Children[j]);
-                        }
-
-                        childIndex = end;
-
-                        _semaphore.WaitOne();
-
-                        var task = Task.Run(() =>
-                        {
-                            var localResults = new CustomList<HtmlNode>();
-
-                            try
-                            {
-                                foreach (var child in childSubset)
-                                {
-                                    if (child.TagType == currentTag)
-                                    {
-                                        foreach (var result in ParallelFindNodes(child, treePathNodes, index + 1))
-                                        {
-                                            localResults.Add(result);
-                                        }
-                                    }
-                                }
-                            }
-                            finally
-                            {
-                                _semaphore.Release();
-                            }
-
-                            return localResults;
-                        });
-
-                        tasks.Add(task);
-                    }
-
-                    Task.WhenAll(tasks).Wait();
-                    foreach (var task in tasks)
-                    {
-                        finalResults.AddRange(task.Result);
-                    }
-                }
-                else
-                {
-                    foreach (var child in node.Children)
+                    var thread = new Thread(() =>
                     {
                         if (child.TagType == currentTag)
                         {
-                            foreach (var result in ParallelFindNodes(child, treePathNodes, index + 1))
+                            var localResults = ParallelFindNodes(child, treePathNodes, index + 1);
+                            lock (childResults)
                             {
-                                finalResults.Add(result);
+                                childResults.Add(localResults);
                             }
                         }
+                    });
+
+                    threads.Add(thread);
+                    thread.Start();
+                }
+
+                foreach (var thread in threads)
+                {
+                    thread.Join();
+                }
+
+                foreach (var resultList in childResults)
+                {
+                    foreach (var result in resultList)
+                    {
+                        finalResults.Add(result);
                     }
                 }
             }

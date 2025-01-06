@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 
 namespace Crawler.Domain.DataStructures;
@@ -10,14 +11,14 @@ public class CustomList<T> : IEnumerable<T>
     private int _count;
     private int _capacity;
 
+    public int Count => _count;
+
     public CustomList()
     {
         _capacity = 10;
         _items = new T[_capacity];
         _count = 0;
     }
-
-    public int Count => _count;
 
     public T this[int index]
     {
